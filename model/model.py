@@ -1,4 +1,6 @@
 # ------------------------- minimind config ------------------------- #
+from typing import Any
+
 from transformers import PretrainedConfig
 
 
@@ -79,3 +81,29 @@ class MinimindConfig(PretrainedConfig):
             if self.inference_rope_scaling
             else None
         )
+
+# 导入依赖
+import torch
+import torch.nn as nn
+
+
+# RMSNorm层归一化模型
+class MinimindModel(nn.Module):
+
+    # __init__初始化
+    def __init__(self, dim:int, eps:float = 1e-05):
+        super().__init__()
+        self.dim = dim  
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(dim))
+
+    # _norm归一化层，使用RMSNorm进行归一化
+    def _norm(self, x):     # 对输入张量x平方，乘上：（其的平均值去倒数，再加eps，最后开放并取倒数）
+        return x*torch.rsqrt(x.pow(2).mean(-1, keepdim = True) + self.eps)
+
+    # forward
+    def forward(self, x):   
+        return self.weight * self._norm(x.float()).type_as(x)
+
+
+
