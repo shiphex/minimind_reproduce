@@ -87,7 +87,7 @@ import torch
 import torch.nn as nn
 
 
-# RMSNorm层归一化模型
+# 一、RMSNorm层归一化模型
 class MinimindModel(nn.Module):
 
     # __init__初始化
@@ -104,6 +104,17 @@ class MinimindModel(nn.Module):
     # forward
     def forward(self, x):   
         return self.weight * self._norm(x.float()).type_as(x)
+
+
+# 二、RoPE将位置编码转换为旋转矩阵
+# 1、预先计算旋转位置编码所需的 Cos 和 Sin 矩阵
+def precompute_freqs_cis(dim: int,                               # 位置编码的维度
+                        end: int = int(32 * 1024),              # 可能的序列最大长度，上下文长度
+                        rope_base: float = 1e6,                 # 位置编码频率底数
+                        rope_scaling: Optional[dict] = None     # 长上下文缩放方式：不缩放
+):
+    pass
+    # 1.初始化RoPE频率
 
 
 
