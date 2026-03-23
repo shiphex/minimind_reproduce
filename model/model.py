@@ -83,6 +83,7 @@ class MinimindConfig(PretrainedConfig):
         )
 
 # 导入依赖
+import math
 import torch
 import torch.nn as nn
 
@@ -108,13 +109,43 @@ class MinimindModel(nn.Module):
 
 # 二、RoPE将位置编码转换为旋转矩阵
 # 1、预先计算旋转位置编码所需的 Cos 和 Sin 矩阵
-def precompute_freqs_cis(dim: int,                               # 位置编码的维度
+def precompute_freqs_cis(dim: int,                              # 位置编码的维度
                         end: int = int(32 * 1024),              # 可能的序列最大长度，上下文长度
                         rope_base: float = 1e6,                 # 位置编码频率底数
                         rope_scaling: Optional[dict] = None     # 长上下文缩放方式：不缩放
 ):
     pass
     # 1.初始化RoPE频率
+    freqs = 1.0/(rope_base**((torch.arange(0, dim, 2))[:dim//2].float()/dim))   
+    attn_factor = 1.0       # 温差缩放
 
+    # 2.从配置字典中提取 YaRN 的超参数
+    # YaRN 算法 (长文本外推逻辑)，如果启用RoPE缩放，则根据缩放类型调整频率
+    if rope_scaling is not None:
+        # 来源：《YaRN: Efficient Context Window Extension of Large Language Models》
+        # https://arxiv.org/abs/2309.00071
+        # orig_max：模型预训时最大训练长度，未设置时默认2048
+        # factor：缩放因子，拓展倍数，未设置时默认16
+        # beta_fast：高频边界，波长比例大于此值的维度不缩放
+        # beta_slow：低频边界，波长比例小于此值的维度全量缩放
+        # 在两边界之间：平滑插值缩放
+        # attention_factor：注意力因子，未设置时默认1.0
+        orig_max = rope_scaling.get("original_max_position_embeddings", 2048)    
+        factor = rope_scaling.get("factor", 16)
+        beta_fast = rope_scaling.get("beta_fast", 32.0)
+        beta_slow = rope_scaling.get("beta_slow", 1.0)
+        attention_factor = rope_scaling.get("attention_factor", 1.0)
 
+        # 推理长度大于训练长度，使用缩放
+        if end / orig_max > 1.0:
+            # 3.计算每个频率的波长，并根据波长与边界的关系计算缩放因子
+            # 计算不同长度的序列对应的不同维度的
+            inv_dim = lambda b: \
+                                (dim * math.log(orig_max / (b * 2 * math.pi))) \
+                                / (2 * math.log(rope_base))
+            
+
+            # 4. 计算高频区和低频区的维度切分点
+            high = min(inv_dim(beta_slow), dim // 2 -1)
+            low = max(inv_dim(beta_fast), 0)
 
