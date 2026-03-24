@@ -86,6 +86,8 @@ class MinimindConfig(PretrainedConfig):
 import math
 import torch
 import torch.nn as nn
+from torch.nn import init
+from typing import Optional, Tuple, List, Union
 
 
 # 一、RMSNorm层归一化模型

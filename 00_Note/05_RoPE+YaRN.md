@@ -1,11 +1,9 @@
-# 配置模型的类
-模型继承自`Hugging Face`的`PretrainedConfig`
-* 待学习MinimindConfig中各参数的含义，在transformers中的对应
-
-# Norm
-* 待学习RMSNorm层归一化模型
-
 # RoPE+YaRN
+## RoPE（Rotary Positional Embedding）旋转位置编码
 * 待学习RoPE（Rotary Positional Embedding）通过一种旋转变换，将位置编码转换为旋转矩阵
+
+
+
+## YaRN（Yet Another Relative Positional Embedding）相对位置编码
 * 待学习YaRN（Yet Another Relative Positional Embedding）通过一种相对位置编码，将位置编码转换为相对位置编码
 
