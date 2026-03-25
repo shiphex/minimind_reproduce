@@ -127,7 +127,7 @@ $$x→Norm→Attention/FFN→+x$$
 ## 公式
 ### LayerNorm公式
 $$
-y_i = \frac{x_i - \frac{1}{n}\sum_{i = 1}^{n}{x_i}}{\sqrt{(x_i - \frac{1}{n}\sum_{i = 1}^{n}{x_i})^2+\epsilon}} * \gamma + \beta
+y_i = \frac{x_i - \frac{1}{n}\sum_{i = 1}^{n}{x_i}}{\sqrt{\frac{1}{n}\sum_{i = 1}^{n}(x_i - \frac{1}{n}\sum_{i = 1}^{n}{x_i})^2+\epsilon}} * \gamma_i + \beta
 $$
 
 子公式：
@@ -137,11 +137,11 @@ $$
 
 - 归一化：$\hat{x_i} = \frac{x_i - \mu}{\sqrt{\sigma^2 + \epsilon}}$
 
-- 缩放+偏移：$y_i = \hat{x_i} * \gamma + \beta$ （LayerNorm公式简化显示）
+- 缩放+偏移：$y_i = \hat{x_i} * \gamma_i + \beta$ （LayerNorm公式简化显示）
 
 ### RMSNorm公式  
 $$
-y_i = \frac{x_i}{\sqrt{\frac{1}{n}\sum_{i = 1}^{n}{x_i^2} + \epsilon}} * \gamma + \beta
+y_i = \frac{x_i}{\sqrt{\frac{1}{n}\sum_{i = 1}^{n}{x_i^2} + \epsilon}} * \gamma_i + \beta
 $$
 
 子公式：
@@ -149,6 +149,54 @@ $$
 
 > 其中，$x_i$是输入向量的第$i$个元素，$n$是输入向量的维度，$\epsilon$是一个小常数，用于防止除以零，$\gamma$是一个可学习的缩放参数，$\beta$是可选偏移。  
 
+
 # 问题
-- 为什么“方向 ≈ 语义”？为什么Transformer主要靠方向编码信息？
-- 把 RMSNorm、LayerNorm、BatchNorm 放在一起对比
+
+## 为什么“方向 ≈ 语义”？为什么Transformer主要靠方向编码信息？
+Transformer的核心：  
+$$Attention(q,k)=softmax(q⋅k)$$
+关键：点积（dot product）  
+$$q⋅k = |q|⋅|k|⋅\cos(\theta)$$
+- attention通过分析`方向`相似度$\cos(\theta)$来判断两个token向量的方向是否相似
+- `长度`不同只表示强度不同
+
+为什么不用长度表示语义？
+> 从Attention训练角度考虑：  
+- 点积 Attention 本质依赖 cosθ  
+- Attention使用了$softmax(q⋅k)$，如果长度不一样，点积忽大忽小，softmax输出会不稳定 
+- 只使用角度，不用同时控制幅度，降低训练难度
+- RMSNorm也将长度固定  
+  
+| 部分 | 作用    |
+| :---: | :---: |
+| 方向 | 语义内容（meaning）   |
+| 长度 | 置信度 / 强度 / 激活程度 |
+
+> 从数学角度考虑：  
+- 即便经过RMSNorm，也只是控制“平均能量”，而不是严格 L2 normalize，各向量长度并未控制到完全等长
+- 欧几里得距离公式：
+  $$||q - k||^2 = |q|^2 + |k|^2 - 2q⋅k$$
+  若RMSNorm让
+  $$|q| \approx |k| \approx C$$
+  $$||q - k||^2 \approx 2C^2 - 2q⋅k$$
+  整理得：
+  $$||q - k||^2 \propto -q⋅k$$
+- 但是RMSNorm ≠ 完全等长，导致欧几里得距离 = 方向 + 微小长度误差
+- 从计算角度$softmax(-||q−k||^2)$额外计算平方、减法、再转成相似度（还要取负）
+- cosine similarity 的优势：
+  $$\cos{\theta} = \frac{q⋅k}{|q|⋅|k|}$$
+  - 忽略长度，只看方向（严格L2归一化）
+
+
+## $\gamma_i$会不会让归一消失？
+$\gamma_i$让模型“重新学会哪些维度重要”:  
+``` python
+shape = (d,)
+γ = [2, 0.5, 1, 3, ...]
+```
+允许模型在稳定前提下，重新调节特征重要性
+
+
+
+
+
