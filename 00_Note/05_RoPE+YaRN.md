@@ -18,10 +18,16 @@ $$
   $${rope\_base}^{\frac{2i}{dim}} = \frac{L}{2\pi*b}$$
   $$i = \frac{dim*\ln{\frac{L}{2\pi*b}}}{2*\ln{rope\_base}}$$  
   - 计算混合因子（用波长计算，即频率的倒数）：
-    $$
-    ramp = \left\{ \begin{array} 0 & 
-     \end{array}\right.
-    $$
+  $$令：f = (\frac{dim}{2} - i_{low})/(i_{high} - i_{low})$$
+  $$
+  ramp = \left\{ \begin{array}{rcl} 
+         0 &, & f \leq 0 \\
+         \\
+         f &, & 0 < f < 1 \\
+         \\
+         1 &, & f \geq 1 
+         \end{array}\right.
+  $$
 
 
 
