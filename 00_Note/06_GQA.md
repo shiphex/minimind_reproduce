@@ -1,5 +1,5 @@
-# `GQA`
-
+# GQA框架
+# `GQA`原理
 
 ## `GQA` 与 `MHA`
 - 《Attention Is All You Need》里的 `MHA`（Multi-Head Attention 多头注意力），核心思想是：  
@@ -240,3 +240,7 @@ $$ Y \in \mathbb{R}^{B \times T \times d_{model}}$$
 - 原输入只是“每个 token 自己的初始表示”
 - 输出则是“融入了上下文信息之后的表示”
 也就是说，输出里的每个 token 向量，已经包含了它对上下文的理解。
+
+
+# 其他
+## Mask

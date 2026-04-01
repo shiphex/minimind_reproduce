@@ -4,83 +4,128 @@ from typing import Any
 from transformers import PretrainedConfig
 
 
-class MinimindConfig(PretrainedConfig):
-    # 模型配置类，继承自 Hugging Face 的 PretrainedConfig 类
-    # 
+class MiniMindConfig(PretrainedConfig):
     model_type = "minimind"
-
-    def __init__(
-        self,
-        dropout: float = 0.0,                       # 正则化的dropout率
-        bos_token_id: int = 1,                      # 序列开始标记的ID
-        eos_token_id: int = 2,                      # 序列结束标记的ID
-        hidden_act: str = "silu",                   # 隐藏层的激活函数
-        hidden_size: int = 512,                     # 隐藏层的大小
-        intermediate_size: int = None,              # 前馈网络中中间层的大小
-        max_position_embeddings: int = 32768,       # 模型能处理的最大序列长度
-        num_attention_heads: int = 8,               # 注意力头的数量
-        num_hidden_layers: int = 8,                 # 隐藏层的数量
-        num_key_value_heads: int = 2,               # 分组查询注意力的键值头数量
-        vocab_size: int = 6400,                     # 词汇表大小
-        rms_norm_eps: float = 1e-05,                # RMS归一化的epsilon值
-        rope_theta: int = 1000000,                  # RoPE位置编码的theta值
-        inference_rope_scaling: bool = False,       # 是否在推理时使用RoPE缩放
-        flash_attention: bool = True,               # 是否使用flash attention以加快计算
-        ############ MoE ############
-        use_moe: bool = False,                      # 是否使用专家混合(Mixture of Experts)架构
-        num_experts_per_tok: int = 2,               # 每个token使用的专家数量
-        n_routed_experts: int = 4,                  # 路由选择的专家数量
-        n_shared_experts: int = 1,                  # 共享专家的数量
-        scoring_func: str = "softmax",              # 专家评分函数
-        aux_loss_alpha: float = 0.01,               # 辅助损失的权重
-        seq_aux: bool = True,                       # 是否使用序列辅助损失
-        norm_topk_prob: bool = True,                # 是否归一化top-k概率
-        **kwargs,
-    ):
-        
-        # 调用父类构造函数
+    def __init__(self, 
+                 hidden_size=768,       # 隐藏层的大小
+                 num_hidden_layers=8,   # 隐藏层的数量
+                 use_moe=False,         # 是否使用专家混合(Mixture of Experts)架构
+                 **kwargs):
         super().__init__(**kwargs)
 
-        # 设置基本模型参数
-        self.dropout = dropout
-        self.bos_token_id = bos_token_id
-        self.eos_token_id = eos_token_id
-        self.hidden_act = hidden_act
         self.hidden_size = hidden_size
-        self.intermediate_size = intermediate_size
-        self.max_position_embeddings = max_position_embeddings
-        self.num_attention_heads = num_attention_heads
         self.num_hidden_layers = num_hidden_layers
-        self.num_key_value_heads = num_key_value_heads
-        self.vocab_size = vocab_size
-        self.rms_norm_eps = rms_norm_eps
-        self.rope_theta = rope_theta
-        self.inference_rope_scaling = inference_rope_scaling
-        self.flash_attention = flash_attention
-        
-        # 设置MoE参数
         self.use_moe = use_moe
-        self.num_experts_per_tok = num_experts_per_tok
-        self.n_routed_experts = n_routed_experts
-        self.n_shared_experts = n_shared_experts
-        self.seq_aux = seq_aux
-        self.norm_topk_prob = norm_topk_prob
-        self.aux_loss_alpha = aux_loss_alpha
-        self.scoring_func = scoring_func
+        self.dropout = kwargs.get("dropout", 0.0)
+        self.vocab_size = kwargs.get("vocab_size", 6400)
+        self.bos_token_id = kwargs.get("bos_token_id", 1)
+        self.eos_token_id = kwargs.get("eos_token_id", 2)
+        self.flash_attn = kwargs.get("flash_attn", True)
+        self.num_attention_heads = kwargs.get("num_attention_heads", 8)
+        self.num_key_value_heads = kwargs.get("num_key_value_heads", 4)
+        self.head_dim = kwargs.get("head_dim", self.hidden_size // self.num_attention_heads)
+        self.hidden_act = kwargs.get("hidden_act", 'silu')
+        self.intermediate_size = kwargs.get("intermediate_size", math.ceil(hidden_size * math.pi / 64) * 64)
+        self.max_position_embeddings = kwargs.get("max_position_embeddings", 32768)
+        self.rms_norm_eps = kwargs.get("rms_norm_eps", 1e-6)
+        self.rope_theta = kwargs.get("rope_theta", 1e6)
+        self.inference_rope_scaling = kwargs.get("inference_rope_scaling", False)
+        self.rope_scaling = {
+            "beta_fast": 32,
+            "beta_slow": 1,
+            "factor": 16,
+            "original_max_position_embeddings": 2048,
+            "attention_factor": 1.0,
+            "type": "yarn"
+        } if self.inference_rope_scaling else None
+        ### MoE specific configs (ignored if use_moe = False)
+        self.num_experts = kwargs.get("num_experts", 4)
+        self.num_experts_per_tok = kwargs.get("num_experts_per_tok", 1)
+        self.moe_intermediate_size = kwargs.get("moe_intermediate_size", self.intermediate_size)
+        self.norm_topk_prob = kwargs.get("norm_topk_prob", True)
+        self.router_aux_loss_coef = kwargs.get("router_aux_loss_coef", 5e-4)
 
-        # 如果启用RoPE缩放，则配置相关参数
-        self.rope_scaling = (
-            {
-                "beta_fast": 32,  # YARN缩放的快速beta参数
-                "beta_slow": 1,   # YARN缩放的慢速beta参数
-                "factor": 16,     # 缩放因子
-                "original_max_position_embeddings": 2048,  # 原始最大位置嵌入
-                "attention_factor": 1.0,    # 注意力因子
-                "type": "yarn",             # RoPE缩放类型
-            }
-            if self.inference_rope_scaling
-            else None
-        )
+# 废弃的config
+'''
+# class MiniMindConfig(PretrainedConfig):
+#     # 模型配置类，继承自 Hugging Face 的 PretrainedConfig 类
+#     # 
+#     model_type = "minimind"
+# 
+#     def __init__(
+#         self,
+#         dropout: float = 0.0,                       # 正则化的dropout率
+#         bos_token_id: int = 1,                      # 序列开始标记的ID
+#         eos_token_id: int = 2,                      # 序列结束标记的ID
+#         hidden_act: str = "silu",                   # 隐藏层的激活函数
+#         hidden_size: int = 512,                     # 隐藏层的大小
+#         intermediate_size: int = None,              # 前馈网络中中间层的大小
+#         max_position_embeddings: int = 32768,       # 模型能处理的最大序列长度
+#         num_attention_heads: int = 8,               # 注意力头的数量
+#         num_hidden_layers: int = 8,                 # 隐藏层的数量
+#         num_key_value_heads: int = 2,               # 分组查询注意力的键值头数量
+#         vocab_size: int = 6400,                     # 词汇表大小
+#         rms_norm_eps: float = 1e-05,                # RMS归一化的epsilon值
+#         rope_theta: int = 1000000,                  # RoPE位置编码的theta值
+#         inference_rope_scaling: bool = False,       # 是否在推理时使用RoPE缩放
+#         flash_attention: bool = True,               # 是否使用flash attention以加快计算
+#         ############ MoE ############
+#         use_moe: bool = False,                      # 是否使用专家混合(Mixture of Experts)架构
+#         num_experts_per_tok: int = 2,               # 每个token使用的专家数量
+#         n_routed_experts: int = 4,                  # 路由选择的专家数量
+#         n_shared_experts: int = 1,                  # 共享专家的数量
+#         scoring_func: str = "softmax",              # 专家评分函数
+#         aux_loss_alpha: float = 0.01,               # 辅助损失的权重
+#         seq_aux: bool = True,                       # 是否使用序列辅助损失
+#         norm_topk_prob: bool = True,                # 是否归一化top-k概率
+#         **kwargs,
+#     ):
+#         
+#         # 调用父类构造函数
+#         super().__init__(**kwargs)
+# 
+#         # 设置基本模型参数
+#         self.dropout = dropout
+#         self.bos_token_id = bos_token_id
+#         self.eos_token_id = eos_token_id
+#         self.hidden_act = hidden_act
+#         self.hidden_size = hidden_size
+#         self.intermediate_size = intermediate_size
+#         self.max_position_embeddings = max_position_embeddings
+#         self.num_attention_heads = num_attention_heads
+#         self.num_hidden_layers = num_hidden_layers
+#         self.num_key_value_heads = num_key_value_heads
+#         self.vocab_size = vocab_size
+#         self.rms_norm_eps = rms_norm_eps
+#         self.rope_theta = rope_theta
+#         self.inference_rope_scaling = inference_rope_scaling
+#         self.flash_attention = flash_attention
+#         
+#         # 设置MoE参数
+#         self.use_moe = use_moe
+#         self.num_experts_per_tok = num_experts_per_tok
+#         self.n_routed_experts = n_routed_experts
+#         self.n_shared_experts = n_shared_experts
+#         self.seq_aux = seq_aux
+#         self.norm_topk_prob = norm_topk_prob
+#         self.aux_loss_alpha = aux_loss_alpha
+#         self.scoring_func = scoring_func
+# 
+#         # 如果启用RoPE缩放，则配置相关参数
+#         self.rope_scaling = (
+#             {
+#                 "beta_fast": 32,  # YARN缩放的快速beta参数
+#                 "beta_slow": 1,   # YARN缩放的慢速beta参数
+#                 "factor": 16,     # 缩放因子
+#                 "original_max_position_embeddings": 2048,  # 原始最大位置嵌入
+#                 "attention_factor": 1.0,    # 注意力因子
+#                 "type": "yarn",             # RoPE缩放类型
+#             }
+#             if self.inference_rope_scaling
+#             else None
+#         )
+'''
+
 
 # 导入依赖
 import math
@@ -222,7 +267,22 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
     if n_rep == 1:
         return x
             # None 等价于 unsqueeze(-2)，插入一个维度用来重复 n_rep 次
-            # reshape 把 num_kv_heads 和 n_rep 合并
+            # reshape 把 num_key_value_heads 和 n_rep 合并
     return x[:, :, :, None, :]  \
             .expand(bs, slen, num_key_value_heads, n_rep, head_dim) \
             .reshape(bs, slen, num_key_value_heads * n_rep, head_dim)
+
+
+class attention(nn.Module):
+    def __init__(self, config: MiniMindConfig):
+        super().__init__()
+        self.num_key_value_heads = config.num_attention_heads \
+                                if config.num_key_value_heads is None \
+                                else config.num_key_value_heads
+        assert config.num_attention_heads % self.num_key_value_heads == 0, \
+                f"num_attention_heads ({config.num_attention_heads}) must be divisible by num_key_value_heads ({self.num_key_value_heads})"
+        self.n_local_heads = config.num_attention_heads
+        self.n_local_kv_heads = config.num_key_value_heads
+        self.n_rap = config.n_local_heads // self.n_local_kv_heads
+        self.head_dim = config.head_dim
+        self.q_proj = nn.Linear(config.hidden_size, config.hidden_size * self.head_dim, bias=False)
