@@ -427,9 +427,9 @@ class attention(nn.Module):
                 # attention_mask 对齐广播到 scores 形状：[B, H, seq_len_q, seq_len]
             if attention_mask is not None: 
                 scores += (1 - attention_mask.unsqueeze(1).unsqueeze(2)) * -1e9
-            output = self.dropout(F.softmax(scores.float(), dim = -1).type_as(xq)) @ xv
+            output = self.attn_dropout(F.softmax(scores.float(), dim = -1).type_as(xq)) @ xv
 
-        output = self.transpose(1, 2).reshape(bsz, seq_len, -1)
+        output = output.transpose(1, 2).reshape(bsz, seq_len, -1)
         output = self.resid_dropout(self.o_proj(output))
 
         return output, past_kv
