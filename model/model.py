@@ -412,10 +412,10 @@ class attention(nn.Module):
                                                     is_causal = True)
         else:
             # 计算注意力分数
-                # scores 形状：[batch, n_heads, seq_len_q, seq_len_k]
+                # scores 形状：[batch, n_heads, seq_len, seq_len_kv]
             scores = (xq @ xk.transpose(-2, -1)) / math.sqrt(self.head_dim)
             # 因果掩码：对分数进行mask掩码处理，只保留下三角(含对角线)部分
-                # 这时候的 scores 形状：[batch, n_heads, seq_len_q, seq_len]，seq_len = 历史 KV 长度 + 本次新增长度
+                # 这时候的 scores 形状：[batch, n_heads, seq_len, seq_len_kv]，seq_len = 历史 KV 长度 + 本次新增长度
                 # scores 最后一维只取最后 seq_len 个位置
                 # 生成一个上三角矩阵，对角线以上为 -inf，对角线以下(含对角线)为 0
                 # 这样在计算注意力时，上三角部分(不含对角线)的分数会被忽略，防止看到未来信息，只保留下三角部分(含对角线)
@@ -423,13 +423,20 @@ class attention(nn.Module):
                                                     float("-inf"),          \
                                                     device = scores.device).triu(1)
             # Padding Mask（填充掩码）：对 padding 位置乘上 -1e9 从而将其 mask 掉，防止它们参与注意力计算
-                # attention_mask 原来的形状 [batch_size, seq_len]
-                # attention_mask 对齐广播到 scores 形状：[B, H, seq_len_q, seq_len]
+                # attention_mask 原来的形状 [batch_size, seq_len_kv]
+                # attention_mask 对齐广播到 scores 形状：[B, H, seq_len, seq_len_kv]
             if attention_mask is not None: 
                 scores += (1 - attention_mask.unsqueeze(1).unsqueeze(2)) * -1e9
+            
+            # softmax 归一化 → 加 dropout → 对 value 加权求和
+                # output 形状：[batch, n_heads, seq_len, head_dim]
             output = self.attn_dropout(F.softmax(scores.float(), dim = -1).type_as(xq)) @ xv
 
+        # 把多头注意力的结果拼回成正常的特征维度
+            # output 形状：[batch, seq_len, hidden_size]
         output = output.transpose(1, 2).reshape(bsz, seq_len, -1)
+
+        # 在残差相加之前，对注意力分支的输出先做 dropout
         output = self.resid_dropout(self.o_proj(output))
 
         return output, past_kv
