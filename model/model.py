@@ -351,6 +351,9 @@ class attention(nn.Module):
         bsz, seq_len, _ = x.shape   # x.shape = [batch_size, seq_len, hidden_size]
 
         # 把 token 映射成 “所有头的 Q 拼接”，一次性生成所有注意力头的 Q、K、V 向量的拼接结果
+            # xq 形状：[batch_size, seq_len, num_heads, head_dim]
+            # xk 形状：[batch_size, seq_len, num_heads_kv, head_dim]
+            # xv 形状：[batch_size, seq_len, num_heads_kv, head_dim]
         xq, xk, xv = self.q_proj(x), self.k_proj(x), self.v_proj(x)
 
         # 将生成的 Q、K、V 向量的拼接结果拆解到对应的注意力头中
@@ -370,9 +373,9 @@ class attention(nn.Module):
             # past_key_value[0]：历史的 key 张量
             # past_key_value[1]：历史的 value 张量
             # 维度与作用：
-                # past_key_value: [batch_size, seq_len_old, num_heads, head_dim]
-                # 新 key 和 value: [batch_size, 1, num_heads, head_dim]
-                # 拼接后 key 和 value：[batch_size, seq_len_old + 1, num_heads, head_dim]
+                # past_key_value: [batch_size, seq_len_old, num_heads_kv, head_dim]
+                # 新 key 和 value: [batch_size, 1, num_heads_kv, head_dim]
+                # 拼接后 key 和 value：[batch_size, seq_len_old + 1, num_heads_kv, head_dim]
             # past_kv: 决定本轮计算出的键值对 要不要存起来，给下一轮推理复用（也就是 KV Cache）
         if past_key_value is not None:
             xk = torch.cat([past_key_value[0], xk], dim = 1)
@@ -380,11 +383,13 @@ class attention(nn.Module):
         past_kv = (xk, xv) if use_cache else None
 
         # 为多头注意力做维度变换 + 分组注意力的 KV 重复
-            # 交换前：[batch, seq_len, n_heads, head_dim]
-            # 交换后：[batch, n_heads, seq_len, head_dim]
+            # xq 交换前：[batch_size, seq_len, num_heads, head_dim]
+            # xq 交换后：[batch_size, num_heads, seq_len, head_dim]
+            # xk、xv 重复并交换前：[batch_size, seq_len, num_heads_kv, head_dim]
+            # xk、xv 重复并交换后：[batch_size, num_heads, seq_len, head_dim]
             # 交换的好处：每个头要独立算 Q*K^T，互不干扰
-                        # H 变成了批量维度
-                        # 每个头是一个独立的小矩阵：[seq_len, D]
+                        # H(num_heads、num_heads_kv) 变成了批量维度
+                        # 每个头是一个独立的小矩阵：[seq_len, head_dim]
                         # 可以一次性对所有头做矩阵乘法
                         # PyTorch 的批量矩阵乘法（bmm/matmul），天然支持前面的维度作为批量，只对最后两维做矩阵乘
                         # 只对最后两个维度做乘法，前面所有维度都当作批量并行处理
@@ -412,10 +417,10 @@ class attention(nn.Module):
                                                     is_causal = True)
         else:
             # 计算注意力分数
-                # scores 形状：[batch, n_heads, seq_len, seq_len_kv]
+                # scores 形状：[batch_size, num_heads, seq_len, seq_len_kv]
             scores = (xq @ xk.transpose(-2, -1)) / math.sqrt(self.head_dim)
             # 因果掩码：对分数进行mask掩码处理，只保留下三角(含对角线)部分
-                # 这时候的 scores 形状：[batch, n_heads, seq_len, seq_len_kv]，seq_len = 历史 KV 长度 + 本次新增长度
+                # 这时候的 scores 形状：[batch_size, num_heads, seq_len, seq_len_kv]，seq_len = 历史 KV 长度 + 本次新增长度
                 # scores 最后一维只取最后 seq_len 个位置
                 # 生成一个上三角矩阵，对角线以上为 -inf，对角线以下(含对角线)为 0
                 # 这样在计算注意力时，上三角部分(不含对角线)的分数会被忽略，防止看到未来信息，只保留下三角部分(含对角线)
@@ -424,16 +429,16 @@ class attention(nn.Module):
                                                     device = scores.device).triu(1)
             # Padding Mask（填充掩码）：对 padding 位置乘上 -1e9 从而将其 mask 掉，防止它们参与注意力计算
                 # attention_mask 原来的形状 [batch_size, seq_len_kv]
-                # attention_mask 对齐广播到 scores 形状：[B, H, seq_len, seq_len_kv]
+                # attention_mask 对齐广播到 scores 形状：[batch_size, num_heads, seq_len, seq_len_kv]
             if attention_mask is not None: 
                 scores += (1 - attention_mask.unsqueeze(1).unsqueeze(2)) * -1e9
             
             # softmax 归一化 → 加 dropout → 对 value 加权求和
-                # output 形状：[batch, n_heads, seq_len, head_dim]
+                # output 形状：[batch_size, num_heads, seq_len, head_dim]
             output = self.attn_dropout(F.softmax(scores.float(), dim = -1).type_as(xq)) @ xv
 
         # 把多头注意力的结果拼回成正常的特征维度
-            # output 形状：[batch, seq_len, hidden_size]
+            # output 形状：[batch_size, seq_len, hidden_size]
         output = output.transpose(1, 2).reshape(bsz, seq_len, -1)
 
         # 在残差相加之前，对注意力分支的输出先做 dropout
