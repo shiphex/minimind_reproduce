@@ -51,4 +51,39 @@ $$ SiLU(x) = x * sigmoid(x) = x * \sigma(x) = x * \frac{1}{1 + e^{-x}} $$
 
 
 
+## 维数拓展
+维数拓展代码段：
+``` python
+self.intermediate_size = kwargs.get("intermediate_size" math.ceil(hidden_size * math.pi / 64) * 64) # 本行在class MiniMindConfig(PretrainedConfig)中 
+ intermediate_size = intermediate_size or config.intermediate_size
+```
 
+历史版本代码段：
+``` python
+if config.intermediate_size is None: 
+  intermediate_size = int(config.hidden_size * 8 / 3)
+  config.intermediate_size = 64 * ((intermediate_size + 64 - 1) // 64)
+```
+
+
+### $\pi$ 与 $\frac{8}{3}$
+当前版本使用 $\pi ≈ 3.1416$ 来计算中间层维度，历史版本使用 $\frac{8}{3} ≈ 2.6667$。  
+对 `hidden_size = 768` 来说，`768 × 8/3 = 2048`，而 `768 × π ≈ 2412.74`，再向上补到 `64` 的倍数后变成 `2432`，比历史版本大 `384`，也就是大约 `18.75%`。
+- 历史版本里的 `8/3` 不是随便拍的，它和 [SwiGLU/GLU 论文](https://arxiv.org/pdf/2002.05202)里的做法一致：`GLU` 变体比原始 `FFN` 多了一个权重矩阵，所以把隐藏层宽度缩小到原来的 `2/3`，这样可以让参数量和计算量大致保持不变；论文里甚至直接给出 `d_model=768` 时，原始 `FFN` 是 `3072`，`GLU` 变体缩到 `2048`。
+
+- MiniMind 代码直接把倍率换成了 π: 
+  - 更宽一点
+  - 容量更大一点
+  - 但代价是参数和计算也更高一点
+
+### `math.ceil(...)` 和 `//` 
+- `math.ceil(...)`: 向上取整
+- `//` 向下取整  
+
+在当前版本和历史版本中取整升维操作方式的解读：
+- 当前版本：
+  为获取略大于或等于 $hidden_size * \pi$ 能被 `64` 整除的数 `intermediate_size`，这个数除以 `64` 后的比值必然是比 $hidden_size * \pi$ 除以  `64` 后大于或等于的第一个整数。
+  $$ 0 \leq \frac{hidden_size * \pi}{64} - \frac{intermediate_size}{64} \lt 1 $$
+
+- 历史版本：
+  先获取 $hidden_size * 8/3$ 的整数部分，为得到略大于或等于该数且能被 `64` 整除的数 `intermediate_size`，采取加 1 后向下取整以获取`intermediate_size`与`64`的最近整数倍数。
