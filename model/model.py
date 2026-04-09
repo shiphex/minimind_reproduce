@@ -453,14 +453,19 @@ class FeedForward(nn.Module):
     def __init__(self, config: MiniMindConfig, intermediate_size: int = None):
         super().__init__()
         intermediate_size = intermediate_size or config.intermediate_size
-        self.gate_proj = nn.Linear(config.hidden_size, intermediate_size, bias = False)
-        self.up_proj = nn.Linear(config.hidden_size, intermediate_size, bias = False)
-        self.down_proj = nn.Linear(intermediate_size, config.hidden_size, bias = False)
+        self.gate_proj = nn.Linear(config.hidden_size, intermediate_size, bias = False)     # 门控
+        self.up_proj = nn.Linear(config.hidden_size, intermediate_size, bias = False)       # 升维
+        self.down_proj = nn.Linear(intermediate_size, config.hidden_size, bias = False)     # 降维
 
         # 激活函数
         self.act_fn = ACT2FN[config.hidden_act]
 
+        # FFN 输出层 dropout
+        self.dropout = nn.Dropout(config.dropout)
+
     def forward(self, x):
-        return self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+        return self.dropout(
+            self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
+            )
 
 
