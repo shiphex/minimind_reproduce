@@ -3,7 +3,7 @@ import torch.nn as nn
 import math, torch, torch.nn.functional as F
 from torch.nn import init
 from typing import Optional, Tuple, List, Union
-from transformers import ACT2FN
+from transformers.activations import ACT2FN
 
 
 # ------------------------- minimind config ------------------------- #
@@ -37,7 +37,7 @@ class MiniMindConfig(PretrainedConfig):
             # intermediate_size         前馈网络中中间层的大小
             # max_position_embeddings   模型能处理的最大序列长度
             # rms_norm_eps              RMS归一化的epsilon值
-            # rope_theta                RoPE位置编码的theta值
+            # rope_theta                RoPE位置编码的theta值，置编码频率底数
             # inference_rope_scaling    是否在推理时使用RoPE缩放
 
         self.hidden_size            = hidden_size
@@ -498,3 +498,25 @@ class MiniMindBlock(nn.Module):
         hidden_states = hidden_states + self.mlp(self.post_attention_layernorm(hidden_states))
 
         return hidden_states, past_key_value
+
+
+# MiniMind Model
+class MiniMindModel(nn.Module):
+    def __init__(self, config: MiniMindConfig):
+        super().__init__()
+        self.config = config
+        self.vocab_size = config.vocab_size
+        self.num_hidden_layers = config.num_hidden_layers
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size)
+        self.dropout = nn.Dropout(config.dropout)
+        self.layers = nn.ModuleList([MiniMindBlock(layer_id, config) for layer_id in range(config.num_hidden_layers)])
+        self.norm = RMSNorm(config.hidden_size, eps = config.rms_norm_eps)
+        freqs_cos, freqs_sin = precompute_freqs_cis(config.head_dim, 
+                                                    config.max_position_embeddings, 
+                                                    config.rope_theta, 
+                                                    config.inference_rope_scaling)
+        self.register_buffer("freqs_cos", freqs_cos, persistent = False)
+        self.register_buffer("freqs_sin", freqs_sin, persistent = False)
+
+    def forword():
+        pass
