@@ -487,7 +487,7 @@ class MiniMindBlock(nn.Module):
         residual = hidden_states
 
         # Self-Attention
-        hidden_states, past_key_value = self.self_attn(self.input_layernorm(hidden_states), 
+        hidden_states, present_key_value = self.self_attn(self.input_layernorm(hidden_states), 
                                                         position_embeddings,
                                                         past_key_value,
                                                         use_cache, 
@@ -497,7 +497,7 @@ class MiniMindBlock(nn.Module):
         # FeedForward
         hidden_states = hidden_states + self.mlp(self.post_attention_layernorm(hidden_states))
 
-        return hidden_states, past_key_value
+        return hidden_states, present_key_value
 
 
 # MiniMind Model
@@ -525,23 +525,33 @@ class MiniMindModel(nn.Module):
                 use_cache = False, 
                 **kwargs):
         batch_size, seq_lenth = input_ids.shape
+        # 兼容处理：若传入缓存格式并非 layers 格式，则重置缓存
         if hasattr(past_key_values, 'layers'):
             past_key_values = None
+        # 若传入缓存为空，缓存空间初始化为全 None
         past_key_values = past_key_values or [None] * len(self.layers)
+        # 计算当前 token 的全局位置起点位置，即取第一层第一个张量的第 2 维长度，也就是已经生成的 token 数量
         start_pos = (past_key_values[0][0].shape[1] if past_key_values[0] is not None else 0)
+        # 获取input_ids[batch_size, seq_lenth]的嵌入表示，形状为[batch_size, seq_lenth, hidden_size]，再做 dropout 处理
         hidden_states = self.dropout(self.embed_tokens(input_ids))
+        # 从历史长度接着切到当前段长度，把 RoPE 需要的 cos/sin 切片计算出来，并且按当前绝对位置对齐
         position_embeddings = (self.freqs_cos[start_pos: start_pos + seq_lenth], 
-                               self.freqs_sin[start_pos: start_pos + seq_lenth],)
+                               self.freqs_sin[start_pos: start_pos + seq_lenth])
+        
+        # 大模型逐层做前向传播 + KV 缓存推理：
+            # 准备一个列表，用来收集每一层返回的新缓存
         presents = []
-        for layer, past_key_values in zip(self.layers, past_key_values):
-            hidden_states, presents = layer(
+            # 逐层前向，把第 i 层 Transformer 和第 i 层对应的历史 KV 缓存一一配对(layer_i, past_kv_i)
+        for layer, past_key_value in zip(self.layers, past_key_values):
+            hidden_states, present = layer(
                 hidden_states,
                 position_embeddings,
-                past_key_values = past_key_values,
+                past_key_value = past_key_value,
                 use_cache = use_cache,
                 attention_mask = attention_mask
             )
-            presents.append(presents)
+            # 把这一层算出来的缓存保存到 presents 列表里。 append()：列表（list）的方法：在列表的最后面，添加一个元素
+            presents.append(present)
         hidden_states = self.norm(hidden_states)
         # aux_loss = sum([layer_id.mlp.aux_loss for layer_id in self.layers if isinstance(layer_id.mlp, MOEFeedForward)], hidden_states.new_zeros(1).squeeze())
         
