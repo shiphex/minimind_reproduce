@@ -3,6 +3,7 @@ import math, torch, torch.nn.functional as F
 from torch import nn
 from transformers.activations import ACT2FN
 from transformers import PreTrainedModel, GenerationMixin, PretrainedConfig
+from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.modeling_outputs import MoeCausalLMOutputWithPast
 
 
@@ -559,7 +560,50 @@ class MiniMindModel(nn.Module):
 
 
 
+class MiniMindForCausalLM(PreTrainedModel, GenerationMixin):
+    config_class = MiniMindConfig
+    def __init__(self, config: MiniMindConfig = None):
+        self.config = config or MiniMindConfig()
+        super().__init__(config)
+        self.model = MiniMindModel(self.config)
+        self.lm_head = nn.Linear(self.config.hidden_size, self.config.vocab_size, bias = False)
+        # 词嵌入层（embed_tokens）和语言模型输出层（lm_head）的权重绑定共享，不额外开辟参数
+            # 大幅减少参数量：词表通常很大（几万～几十万），绑定能省掉一层全连接参数
+            # 保持输入输出语义空间一致：让 “输入编码” 和 “输出解码” 在同一个向量空间。
+            # 训练更稳定，收敛更快。
+        self.model.embed_tokens.weight = self.lm_head.weight
 
+    def forward(self, 
+                input_ids,
+                attention_mask = None,
+                past_key_values = None,
+                use_cache = False,
+                logits_to_keep = 0,
+                labels = None,
+                **kwargs):
+        # hidden_states, presents, aux_loss
+        hidden_states, presents = self.model(input_ids, 
+                   attention_mask = attention_mask, 
+                   past_key_values = past_key_values, 
+                   use_cache = use_cache, 
+                   **kwargs)
+        slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
+        # 每个位置预测每个词的概率分数，logits.shape = [batch_size, num_kept_tokens, vocab_size]
+        logits = self.lm_head(hidden_states)[:, slice_indices, :]
+        loss = None
 
+        # 只有在传入标签时，才会计算训练损失。labels 就是“打开训练模式”的开关。
+        if labels is not None:
+            # 计算下一个 token 预测的交叉熵损失
+            # x 去掉最后一个位置的输出, y 去掉第一个位置的标签, .contiguous()让张量在内存里连续排布
+            x, y = logits[..., :-1, : ].contiguous(), labels[..., 1, : ].contiguous()
+            loss = nn.functional.cross_entropy(x.view(-1, x.size(-1)), y.view(-1), ignore_index = -100)
+        
+        output = CausalLMOutputWithPast(loss = loss,
+                                        logits = logits,
+                                        past_key_values = past_key_values,
+                                        hidden_states = hidden_states)
+        # output.aux_loss = aux_loss
 
+        return output
 
