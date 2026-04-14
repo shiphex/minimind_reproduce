@@ -588,7 +588,7 @@ class MiniMindForCausalLM(PreTrainedModel, GenerationMixin):
                    use_cache = use_cache, 
                    **kwargs)
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) else logits_to_keep
-        # 每个位置预测每个词的概率分数，logits.shape = [batch_size, num_kept_tokens, vocab_size]
+        # 每个位置预测每个词的概率分数，logits.shape = [batch_size, seq_len, vocab_size]，vocab_size中储存了分数
         logits = self.lm_head(hidden_states)[:, slice_indices, :]
         loss = None
 
