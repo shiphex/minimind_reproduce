@@ -192,7 +192,7 @@ class RMSNorm(nn.Module):
 def precompute_freqs_cis(dim: int,                              # 位置编码的维度
                         end: int = int(32 * 1024),              # 可能的序列最大长度，上下文长度
                         rope_base: float = 1e6,                 # 位置编码频率底数
-                        rope_scaling: Optional[dict] = None     # 长上下文缩放方式：不缩放
+                        rope_scaling: dict = None     # 长上下文缩放方式：不缩放
 ):
     
     # 1.初始化RoPE频率
