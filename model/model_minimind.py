@@ -477,7 +477,7 @@ class MiniMindBlock(nn.Module):
         self.self_attn = Attention(config)
         self.input_layernorm = RMSNorm(config.hidden_size, eps = config.rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(config.hidden_size, eps = config.rms_norm_eps)
-        self.mlp = FeedForward(config) # if not config.use_moe else MoEFeedForward(config)
+        self.mlp = FeedForward(config) if not config.use_moe else MoEFeedForward(config)
 
     def forward(self, 
                 hidden_states, 
@@ -554,9 +554,9 @@ class MiniMindModel(nn.Module):
             # 把这一层算出来的缓存保存到 presents 列表里。 append()：列表（list）的方法：在列表的最后面，添加一个元素
             presents.append(present)
         hidden_states = self.norm(hidden_states)
-        # aux_loss = sum([layer_id.mlp.aux_loss for layer_id in self.layers if isinstance(layer_id.mlp, MOEFeedForward)], hidden_states.new_zeros(1).squeeze())
+        aux_loss = sum([layer_id.mlp.aux_loss for layer_id in self.layers if isinstance(layer_id.mlp, MOEFeedForward)], hidden_states.new_zeros(1).squeeze())
         
-        return hidden_states, presents      # , aux_loss
+        return hidden_states, presents, aux_loss
 
 
 
@@ -582,7 +582,7 @@ class MiniMindForCausalLM(PreTrainedModel, GenerationMixin):
                 labels = None,
                 **kwargs):
         # hidden_states, presents, aux_loss
-        hidden_states, presents = self.model(input_ids, 
+        hidden_states, presents, aux_loss = self.model(input_ids, 
                    attention_mask = attention_mask, 
                    past_key_values = past_key_values, 
                    use_cache = use_cache, 

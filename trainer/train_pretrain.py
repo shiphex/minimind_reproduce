@@ -50,7 +50,7 @@ def train_epoch(epoch, loader, iters, start_step = 0, wanlb = None):
             # 1. 前向传播
             res = model(input_ids, labels = labels)
             # 2. 计算loss
-            loss = res.loss # + res.aux_loss
+            loss = res.loss + res.aux_loss
             loss = loss / args.accumulation_steps   # 梯度累积
         
         # 3. 反向传播
@@ -75,8 +75,8 @@ def train_epoch(epoch, loader, iters, start_step = 0, wanlb = None):
             spend_time = time.time() - start_time
             # 让日志里显示的是“未除之前”的真实量级
             current_loss = loss.item() * args.accumulation_steps
-            # current_aux_loss = res.aux_loss.item() * args.accumulation_steps
-            # current_logits_loss = current_loss - current_aux_loss
+            current_aux_loss = res.aux_loss.item() * args.accumulation_steps
+            current_logits_loss = current_loss - current_aux_loss
             current_lr = optimizer.param_groups[-1]['lr']
 
             # 估计训练剩余 epoch 还要多少时间
@@ -89,8 +89,8 @@ def train_epoch(epoch, loader, iters, start_step = 0, wanlb = None):
                    f"epoch_time: {eta_min:.1f}min")
             if wandb:
                 wandb.log({"loss": current_loss, 
-                           # "logits_loss": current_logits_loss, 
-                           # "aux_loss": current_aux_loss, 
+                           "logits_loss": current_logits_loss, 
+                           "aux_loss": current_aux_loss, 
                            "learning_rate": current_lr, 
                            "epoch_time": eta_min})
 
@@ -136,11 +136,6 @@ def train_epoch(epoch, loader, iters, start_step = 0, wanlb = None):
         scaler.step(optimizer)
         scaler.update()
         optimizer.zero_grad(set_to_none=True)
-
-
-
-
-
 
 
 if __name__ == "__main__":

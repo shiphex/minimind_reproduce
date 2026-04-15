@@ -38,7 +38,6 @@ class PretrainDataset(Dataset):
         return input_ids, labels
 
 
-# 
 
 if __name__ == "__main__":
     pass
