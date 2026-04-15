@@ -15,7 +15,19 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, DistributedSampler
 from model.model_minimind import MiniMindConfig
 from dataset.lm_dataset import PretrainDataset
-from trainer.trainer_utils import get_lr, Logger, is_main_process, lm_checkpoint, init_distributed_mode, setup_seed, init_model, SkipBatchSampler
+from trainer.trainer_utils import (
+    DEFAULT_CHECKPOINT_DIR,
+    DEFAULT_OUT_DIR,
+    Logger,
+    SkipBatchSampler,
+    get_lr,
+    init_distributed_mode,
+    init_model,
+    is_main_process,
+    lm_checkpoint,
+    resolve_project_path,
+    setup_seed,
+)
 
 warnings.filterwarnings('ignore')
 
@@ -121,7 +133,7 @@ def train_epoch(epoch, loader, iters, start_step = 0, wanlb = None):
                           epoch = epoch, 
                           step = step, 
                           wandb = wandb, 
-                          save_dir = '../checkpoints')
+                          save_dir = DEFAULT_CHECKPOINT_DIR)
             # 保存完切回训练模式
             model.train()
 
@@ -140,7 +152,7 @@ def train_epoch(epoch, loader, iters, start_step = 0, wanlb = None):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="MiniMind Pretraining")
-    parser.add_argument("--save_dir", type=str, default="../out", help="模型保存目录")
+    parser.add_argument("--save_dir", type=str, default=str(DEFAULT_OUT_DIR), help="模型保存目录")
     parser.add_argument('--save_weight', default='pretrain', type=str, help="保存权重的前缀名")
     parser.add_argument("--epochs", type=int, default=2, help="训练轮数")
     parser.add_argument("--batch_size", type=int, default=32, help="batch size")
@@ -163,6 +175,7 @@ if __name__ == "__main__":
     parser.add_argument("--wandb_project", type=str, default="MiniMind-Pretrain", help="wandb项目名")
     parser.add_argument("--use_compile", default=0, type=int, choices=[0, 1], help="是否使用torch.compile加速（0=否，1=是）")
     args = parser.parse_args()
+    args.save_dir = str(resolve_project_path(args.save_dir, DEFAULT_OUT_DIR))
 
     # ========== 1. 初始化环境和随机种子 ==========
     local_rank = init_distributed_mode()
@@ -172,7 +185,7 @@ if __name__ == "__main__":
     # ========== 2. 配置目录、模型参数、检查ckp ==========
     os.makedirs(args.save_dir, exist_ok=True)
     lm_config = MiniMindConfig(hidden_size=args.hidden_size, num_hidden_layers=args.num_hidden_layers, use_moe=bool(args.use_moe))
-    ckp_data = lm_checkpoint(lm_config, weight=args.save_weight, save_dir='../checkpoints') if args.from_resume==1 else None
+    ckp_data = lm_checkpoint(lm_config, weight=args.save_weight, save_dir=DEFAULT_CHECKPOINT_DIR) if args.from_resume==1 else None
     
     # ========== 3. 设置混合精度 ==========
     device_type = "cuda" if "cuda" in args.device else "cpu"

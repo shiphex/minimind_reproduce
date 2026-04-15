@@ -3,6 +3,7 @@
 """
 import os
 import sys
+from pathlib import Path
 __package__ = "trainer"
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import random
@@ -14,6 +15,37 @@ from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import Sampler
 from transformers import AutoTokenizer, AutoModel, AutoModelForSequenceClassification
 from model.model_minimind import MiniMindForCausalLM
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_MODEL_DIR = PROJECT_ROOT / 'model'
+DEFAULT_OUT_DIR = PROJECT_ROOT / 'out'
+DEFAULT_CHECKPOINT_DIR = PROJECT_ROOT / 'checkpoints'
+REQUIRED_TOKENIZER_FILES = ('tokenizer.json', 'tokenizer_config.json')
+
+
+def resolve_project_path(path_value, default_path):
+    path = default_path if path_value is None else Path(path_value)
+    if not path.is_absolute():
+        path = (PROJECT_ROOT / path).resolve()
+    return path
+
+
+def validate_local_tokenizer_dir(tokenizer_path):
+    tokenizer_path = Path(tokenizer_path)
+    if not tokenizer_path.exists():
+        raise FileNotFoundError(
+            f'Local tokenizer directory not found: {tokenizer_path}. '
+            "This project expects a local tokenizer under the repo 'model' directory."
+        )
+    if not tokenizer_path.is_dir():
+        raise NotADirectoryError(f'Tokenizer path is not a directory: {tokenizer_path}')
+
+    missing_files = [name for name in REQUIRED_TOKENIZER_FILES if not (tokenizer_path / name).exists()]
+    if missing_files:
+        raise FileNotFoundError(
+            f'Missing tokenizer files in {tokenizer_path}: {", ".join(missing_files)}. '
+            "When the local path is invalid, transformers may try to treat it like a Hugging Face repo id."
+        )
 
 def get_model_params(model, config):
     total = sum(p.numel() for p in model.parameters()) / 1e6
@@ -60,18 +92,19 @@ def setup_seed(seed: int):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-def lm_checkpoint(lm_config, weight='full_sft', model=None, optimizer=None, epoch=0, step=0, wandb=None, save_dir='../checkpoints', **kwargs):
-    os.makedirs(save_dir, exist_ok=True)
+def lm_checkpoint(lm_config, weight='full_sft', model=None, optimizer=None, epoch=0, step=0, wandb=None, save_dir=DEFAULT_CHECKPOINT_DIR, **kwargs):
+    save_dir = resolve_project_path(save_dir, DEFAULT_CHECKPOINT_DIR)
+    save_dir.mkdir(parents=True, exist_ok=True)
     moe_path = '_moe' if lm_config.use_moe else ''
-    ckp_path = f'{save_dir}/{weight}_{lm_config.hidden_size}{moe_path}.pth'
-    resume_path = f'{save_dir}/{weight}_{lm_config.hidden_size}{moe_path}_resume.pth'
+    ckp_path = save_dir / f'{weight}_{lm_config.hidden_size}{moe_path}.pth'
+    resume_path = save_dir / f'{weight}_{lm_config.hidden_size}{moe_path}_resume.pth'
 
     if model is not None:
         raw_model = model.module if isinstance(model, DistributedDataParallel) else model
         raw_model = getattr(raw_model, '_orig_mod', raw_model)
         state_dict = raw_model.state_dict()
         state_dict = {k: v.half().cpu() for k, v in state_dict.items()}
-        ckp_tmp = ckp_path + '.tmp'
+        ckp_tmp = Path(f'{ckp_path}.tmp')
         torch.save(state_dict, ckp_tmp)
         os.replace(ckp_tmp, ckp_path)
         wandb_id = None
@@ -99,13 +132,13 @@ def lm_checkpoint(lm_config, weight='full_sft', model=None, optimizer=None, epoc
                 else:
                     resume_data[key] = value
 
-        resume_tmp = resume_path + '.tmp'
+        resume_tmp = Path(f'{resume_path}.tmp')
         torch.save(resume_data, resume_tmp)
         os.replace(resume_tmp, resume_path)
         del state_dict, resume_data
         torch.cuda.empty_cache()
     else:  # 加载模式
-        if os.path.exists(resume_path):
+        if resume_path.exists():
             ckp_data = torch.load(resume_path, map_location='cpu')
             saved_ws = ckp_data.get('world_size', 1)
             current_ws = dist.get_world_size() if dist.is_initialized() else 1
@@ -116,13 +149,16 @@ def lm_checkpoint(lm_config, weight='full_sft', model=None, optimizer=None, epoc
         return None
 
 
-def init_model(lm_config, from_weight='pretrain', tokenizer_path='../model', save_dir='../out', device='cuda'):
-    tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+def init_model(lm_config, from_weight='pretrain', tokenizer_path=DEFAULT_MODEL_DIR, save_dir=DEFAULT_OUT_DIR, device='cuda'):
+    tokenizer_path = resolve_project_path(tokenizer_path, DEFAULT_MODEL_DIR)
+    save_dir = resolve_project_path(save_dir, DEFAULT_OUT_DIR)
+    validate_local_tokenizer_dir(tokenizer_path)
+    tokenizer = AutoTokenizer.from_pretrained(str(tokenizer_path))
     model = MiniMindForCausalLM(lm_config)
 
     if from_weight!= 'none':
         moe_suffix = '_moe' if lm_config.use_moe else ''
-        weight_path = f'{save_dir}/{from_weight}_{lm_config.hidden_size}{moe_suffix}.pth'
+        weight_path = save_dir / f'{from_weight}_{lm_config.hidden_size}{moe_suffix}.pth'
         weights = torch.load(weight_path, map_location=device)
         model.load_state_dict(weights, strict=False)
 

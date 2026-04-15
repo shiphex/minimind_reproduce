@@ -1,4 +1,5 @@
 from torch.utils.data import Dataset
+from pathlib import Path
 import torch
 import json
 import os
@@ -12,7 +13,10 @@ class PretrainDataset(Dataset):
         super().__init__()
         self.tokenizer = tokenizer
         self.max_length = max_length
-        self.samples = load_dataset('json', data_files=data_path, split = 'train')
+        data_path = Path(data_path)
+        if not data_path.is_absolute():
+            data_path = (Path(__file__).resolve().parents[1] / data_path).resolve()
+        self.samples = load_dataset('json', data_files=data_path.as_posix(), split = 'train')
 
     def __len__(self):
         return len(self.samples)
@@ -23,7 +27,7 @@ class PretrainDataset(Dataset):
         tokens = self.tokenizer(str(sample['text']), 
                                 add_special_tokens = False, 
                                 max_length = self.max_length -2, 
-                                truncation = True)
+                                truncation = True).input_ids
         # 2. 拼接 BOS + token文本 + EOS 组成完整训练序列
         tokens = [self.tokenizer.bos_token_id] + tokens + [self.tokenizer.eos_token_id]
         # 3. 使用 PAD 补齐文本长度到统一的 max_length
