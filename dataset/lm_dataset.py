@@ -39,3 +39,6 @@ class PretrainDataset(Dataset):
 
 
 # 
+
+if __name__ == "__main__":
+    pass
