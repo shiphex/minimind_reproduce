@@ -316,7 +316,7 @@ class Attention(nn.Module):
                 f"num_attention_heads ({config.num_attention_heads}) must be divisible by num_key_value_heads ({self.num_key_value_heads})"
         self.n_local_heads = config.num_attention_heads
         self.n_local_kv_heads = config.num_key_value_heads
-        self.n_rap = config.n_local_heads // self.n_local_kv_heads
+        self.n_rap = self.n_local_heads // self.n_local_kv_heads
 
         # 把 token 向量按注意力头切分/组合，实现多头注意力 + GQA 分组查询的核心投影逻辑
             # q_proj：把 token 映射成 “所有头的 Q 拼接”，一次性生成所有注意力头的 Q 向量的拼接结果
@@ -515,7 +515,7 @@ class MiniMindModel(nn.Module):
         freqs_cos, freqs_sin = precompute_freqs_cis(dim = config.head_dim, 
                                                     end = config.max_position_embeddings, 
                                                     rope_base = config.rope_theta, 
-                                                    rope_scaling = config.inference_rope_scaling)
+                                                    rope_scaling = config.rope_scaling)
         self.register_buffer("freqs_cos", freqs_cos, persistent = False)
         self.register_buffer("freqs_sin", freqs_sin, persistent = False)
 
