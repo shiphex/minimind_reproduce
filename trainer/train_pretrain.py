@@ -68,7 +68,7 @@ def train_epoch(epoch, loader, iters, start_step = 0, wanlb = None):
             # 清空梯度
             optimizer.zero_grad(set_to_none = True)
             # 可选：尽量释放显存碎片
-            # torch.cuda.empty_cache()
+            torch.cuda.empty_cache()
 
         # 打印训练日志
         if step % args.log_interval == 0 or step == iters:
