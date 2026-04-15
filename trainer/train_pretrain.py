@@ -4,7 +4,7 @@ import sys
 __package__ = "trainer"
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-import argparse
+import argparse     # 命令行参数解析
 import time
 import warnings
 import torch
@@ -19,8 +19,127 @@ from trainer.trainer_utils import get_lr, Logger, is_main_process, lm_checkpoint
 
 warnings.filterwarnings('ignore')
 
-def train_epoch():
-    pass
+
+# --------------------------------------------------------------
+# 训练一个 epoch 的完整函数
+# 参数：
+#       epoch: 当前是第几个 epoch（从 0 开始）
+#       loader: DataLoader（已经通过 SkipBatchSampler 跳过了已训练数据）
+#       iters: 本 epoch 总共多少个 step（= len(loader)）
+#       start_step: 从第几个 global step 开始算（用于续训时日志对齐）
+#       wandb: 是否启用 wandb 日志
+# --------------------------------------------------------------
+def train_epoch(epoch, loader, iters, start_step = 0, wanlb = None):
+    start_time = time.time()
+    last_step = start_step
+    
+    # 遍历数据批次
+    for step, (input_ids, labels) in enumerate(loader, start = start_step + 1):
+        input_ids = input_ids.to(args.device)
+        labels = labels.to(args.device)
+        last_step = step
+
+        # 设置动态学习率
+        lr = get_lr(epoch * iters + step, args.epochs * iters, args.learning_rate)
+        # 把学习率应用到优化器的所有参数组（支持不同层不同 lr）
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = lr
+
+        # 
+        with autocast_ctx:
+            # 1. 前向传播
+            res = model(input_ids, labels = labels)
+            # 2. 计算loss
+            loss = res.loss # + res.aux_loss
+            loss = loss / args.accumulation_steps   # 梯度累积
+        
+        # 3. 反向传播
+        scaler.scale(loss).backward()
+            
+        # 梯度更新
+        if step % args.accumulation_steps == 0:
+            # 先把梯度恢复成真实尺度，再做裁剪
+            scaler.unscale_(optimizer)
+            # 裁剪梯度，防止梯度爆炸
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+            # 优化器更新、缩放因子更新
+            scaler.step(optimizer)
+            scaler.update()
+            # 清空梯度
+            optimizer.zero_grad(set_to_none = True)
+            # 可选：尽量释放显存碎片
+            # torch.cuda.empty_cache()
+
+        # 打印训练日志
+        if step % args.log_interval == 0 or step == iters:
+            spend_time = time.time() - start_time
+            # 让日志里显示的是“未除之前”的真实量级
+            current_loss = loss.item() * args.accumulation_steps
+            # current_aux_loss = res.aux_loss.item() * args.accumulation_steps
+            # current_logits_loss = current_loss - current_aux_loss
+            current_lr = optimizer.param_groups[-1]['lr']
+
+            # 估计训练剩余 epoch 还要多少时间
+            eta_min = spend_time * (iters -step) / max(step - start_step, 1) // 60
+
+            Logger(f"Epoch:[{epoch + 1}/{args.epochs}]({step}/{iters})" 
+                   f"loss:{current_loss : .4f}" 
+                   # f"aux_loss: {current_aux_loss:.4f}"
+                   f"lr: {current_lr:.8f}"
+                   f"epoch_time: {eta_min:.1f}min")
+            if wandb:
+                wandb.log({"loss": current_loss, 
+                           # "logits_loss": current_logits_loss, 
+                           # "aux_loss": current_aux_loss, 
+                           "learning_rate": current_lr, 
+                           "epoch_time": eta_min})
+
+        # 周期性保存模型
+        if (step % args.save_interval == 0 or step == iters) and is_main_process():
+            # 保存前切到 eval，避免 dropout / 其他训练态行为影响状态
+            model.eval()
+
+            # 如果是 MoE，就在文件名里加标记
+            moe_suffix = '_moe' if lm_config.use_moe else ''
+            ckp = f'{args.save_dir}/{args.save_weight}_{lm_config.hidden_size}{moe_suffix}.pth'
+
+            # DDP 模式下要从 model.module 取真实参数
+            raw_model = model.module if isinstance(model, DistributedDataParallel) else model
+            raw_model = getattr(raw_model, '_orig_mod', raw_model)
+            state_dict = raw_model.state_dict()
+
+            # 保存成半精度，减小体积
+            torch.save({k: v.half().cpu() for k, v in state_dict.items()}, ckp)
+
+            # 另存一份完整 checkpoint，
+            # 里面一般会带 model / optimizer / scaler / epoch / step 等恢复训练信息
+            lm_checkpoint(lm_config, 
+                          weight = args.save_weight, 
+                          model = model, 
+                          optimizer = optimizer, 
+                          scaler = scaler, 
+                          epoch = epoch, 
+                          step = step, 
+                          wandb = wandb, 
+                          save_dir = '../checkpoints')
+            # 保存完切回训练模式
+            model.train()
+
+            del state_dict
+
+        del input_ids, labels, res, loss
+
+    # 把最后没凑满一个 accumulation 周期的残余梯度，也做一次参数更新
+    if last_step > start_step and last_step % args.accumulation_steps != 0:
+        scaler.unscale_(optimizer)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+        scaler.step(optimizer)
+        scaler.update()
+        optimizer.zero_grad(set_to_none=True)
+
+
+
+
 
 
 
