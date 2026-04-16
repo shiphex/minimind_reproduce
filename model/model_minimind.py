@@ -582,8 +582,8 @@ class MiniMindForCausalLM(PreTrainedModel, GenerationMixin):
                 logits_to_keep = 0,
                 labels = None,
                 **kwargs):
-        # hidden_states, presents, aux_loss
-        hidden_states, presents, aux_loss = self.model(input_ids, 
+        # hidden_states, past_key_values, aux_loss
+        hidden_states, past_key_values, aux_loss = self.model(input_ids, 
                    attention_mask = attention_mask, 
                    past_key_values = past_key_values, 
                    use_cache = use_cache, 
@@ -600,6 +600,7 @@ class MiniMindForCausalLM(PreTrainedModel, GenerationMixin):
             x, y = logits[..., :-1, : ].contiguous(), labels[..., 1:].contiguous()
             loss = nn.functional.cross_entropy(x.view(-1, x.size(-1)), y.view(-1), ignore_index = -100)
         
+        # MoeCausalLMOutputWithPast(loss=loss, aux_loss=aux_loss, logits=logits, past_key_values=past_key_values, hidden_states=hidden_states)
         output = CausalLMOutputWithPast(loss = loss,
                                         logits = logits,
                                         past_key_values = past_key_values,
