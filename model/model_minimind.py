@@ -432,7 +432,13 @@ class Attention(nn.Module):
             # Padding Mask（填充掩码）：对 padding 位置乘上 -1e9 从而将其 mask 掉，防止它们参与注意力计算
                 # attention_mask 原来的形状 [batch_size, seq_len_kv]
                 # attention_mask 对齐广播到 scores 形状：[batch_size, num_heads, seq_len, seq_len_kv]
-            if attention_mask is not None: 
+            if attention_mask is not None:
+                # attention_mask 长度对齐保护
+                if attention_mask.size(-1) < scores.size(-1):
+                    pad_len = scores.size(-1) - attention_mask.size(-1)
+                    attention_mask = nn.functional.pad(attention_mask, (0, pad_len), value=1)
+                elif attention_mask.size(-1) > scores.size(-1):
+                    attention_mask = attention_mask[..., -scores.size(-1):]
                 scores += (1 - attention_mask.unsqueeze(1).unsqueeze(2)) * -1e9
             
             # softmax 归一化 → 加 dropout → 对 value 加权求和
