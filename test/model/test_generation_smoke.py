@@ -1,27 +1,32 @@
+"""
+测试目标：
+- 对 `model.generate(...)` 做最小冒烟验证。
+- 确认模型在启用生成接口后至少能连续生成若干 token。
+
+预期结果：
+- `generate()` 不应在前几步崩溃。
+- 返回结果长度应大于原始 prompt 长度。
+
+测试步骤：
+1. 构造一个小尺寸 MiniMind 模型。
+2. 准备一段最小输入及 attention mask。
+3. 调用 `generate()` 生成少量新 token。
+4. 检查返回张量形状。
+"""
 from pathlib import Path
 import sys
 
 import torch
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from model.model_minimind import MiniMindConfig, MiniMindForCausalLM
-
-
-def build_small_model():
-    config = MiniMindConfig(
-        hidden_size=128,
-        num_hidden_layers=2,
-        use_moe=False,
-        vocab_size=128,
-        flash_attn=False,
-    )
-    return MiniMindForCausalLM(config).eval()
+from test._shared import build_small_model
 
 
 def main():
+    """执行最小生成冒烟测试。"""
     torch.manual_seed(42)
     model = build_small_model()
 
