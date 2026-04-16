@@ -2,12 +2,19 @@ import time
 import argparse
 import random
 import warnings
+from pathlib import Path
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM, TextStreamer
 from model.model_minimind import MiniMindConfig, MiniMindForCausalLM
-from model.model_lora import *
-from trainer.trainer_utils import setup_seed, get_model_params
+# from model.model_lora import *
+from trainer.trainer_utils import DEFAULT_OUT_DIR, resolve_project_path, setup_seed, get_model_params
 warnings.filterwarnings('ignore')
+
+def resolve_weight_path(save_dir, filename, allow_file_path=False):
+    save_path = Path(resolve_project_path(save_dir, DEFAULT_OUT_DIR))
+    if save_path.suffix.lower() == '.pth':
+        return save_path if allow_file_path else save_path.parent / filename
+    return save_path / filename
 
 def init_model(args):
     tokenizer = AutoTokenizer.from_pretrained(args.load_from)
@@ -19,11 +26,11 @@ def init_model(args):
             inference_rope_scaling=args.inference_rope_scaling
         ))
         moe_suffix = '_moe' if args.use_moe else ''
-        ckp = f'./{args.save_dir}/{args.weight}_{args.hidden_size}{moe_suffix}.pth'
+        ckp = resolve_weight_path(args.save_dir, f'{args.weight}_{args.hidden_size}{moe_suffix}.pth', allow_file_path=True)
         model.load_state_dict(torch.load(ckp, map_location=args.device), strict=True)
         if args.lora_weight != 'None':
             apply_lora(model)
-            load_lora(model, f'./{args.save_dir}/{args.lora_weight}_{args.hidden_size}.pth')
+            load_lora(model, resolve_weight_path(args.save_dir, f'{args.lora_weight}_{args.hidden_size}.pth'))
     else:
         model = AutoModelForCausalLM.from_pretrained(args.load_from, trust_remote_code=True)
     get_model_params(model, model.config)
