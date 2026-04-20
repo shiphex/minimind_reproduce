@@ -74,9 +74,9 @@ class MiniMindConfig(PretrainedConfig):
         # MOE配置参数：
             # num_experts               专家数量
             # num_experts_per_tok       Top-K：每个 Token 在推理时激活的专家数量 (通常远小于总专家数)
-            # moe_intermediate_size     
+            # moe_intermediate_size     MoE 前馈网络中中间层的大小
             # norm_topk_prob            是否对选出的 Top-K 专家的权重进行归一化 (使其和为1)
-            # router_aux_loss_coef      
+            # router_aux_loss_coef      均衡损失权重
         self.num_experts            = kwargs.get("num_experts", 4)
         self.num_experts_per_tok    = kwargs.get("num_experts_per_tok", 1)
         self.moe_intermediate_size  = kwargs.get("moe_intermediate_size", self.intermediate_size)
@@ -475,6 +475,73 @@ class FeedForward(nn.Module):
             self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
             )
 
+
+# MOE FFN
+class MOEForward(nn.Module):
+    def __init__(self, config: MiniMindConfig):
+        super().__init__()
+        self.config = config
+        self.gate = nn.Linear(config.hidden_size, config.num_experts, bias = False)
+        # 设置专家网络列表
+        self.experts = nn.ModuleList([FeedForward(config, intermediate_size = config.intermediate_size) for _ in range(config.num_experts)])
+        self.act_fn = ACT2FN[config.hidden_act]
+
+    def forward(self, x):
+        batch_size, seq_len, hidden_dim = x.shape
+        # 将输入矩阵展平为 [batch_size * seq_len, hidden_dim]
+        x_flat = x.view(-1, hidden_dim)
+        # 1. 获取每个 token 所选专家的权重、索引
+        scores = F.softmax(self.gate(x_flat), dim = -1)
+        topk_weight, topk_idx = torch.topk(scores, k = self.config.num_experts_per_tok, dim = -1, sorted = False)
+        # 2. 对选出的 Top-K 专家的权重之和归一化
+        if self.config.norm_topk_prob: 
+            topk_weight = topk_weight / (topk_weight.sum(dim = -1, keepdim = True) + 1e-20)
+        # 3. 通过选中的专家网络进行FFN计算
+        y = torch.zeros_like(x_flat)
+        for i, expert in enumerate(self.experts):
+            # mask 根据 topk_idx 中是否记录当前专家的索引，若有当前专家的索引，则记录当前专家需处理的 token 对应的下标
+            mask = (topk_idx == i)
+            if mask.any():
+                # token_idx：取出当前专家处理的 token 对应的下标
+                token_idx = mask.any(dim = -1).nonzero().flatten()
+                # weight：取出当前专家处理的 token 对应的权重
+                weight = topk_weight[mask].view(-1, 1)
+                # 4. 对专家网络输出进行加权求和
+                    # 专家计算 + 加权累加：
+                    # x_flat[token_idx]：   只取出该专家负责的 token 特征
+                    # expert(...)：         把筛选后的特征 扔进当前单个 FFN 专家 前向计算
+                    # *weight：             乘上路由分配的权重（MoE 加权融合）
+                    # .to(y.dtype)：        统一数据类型，防止精度报错
+                    # y.index_add_(0, token_idx, 结果)：    按 token 索引，原位累加到最终输出张量 y
+                y.index_add_(0, token_idx, weight * expert(x_flat[token_idx]).to(y.dtype))
+            # 若训练时出现该专家未激活情况的兼容（该专家全程没有任何 token 分配，且处于训练模式 self.training=True）
+            elif self.training:
+                # 结果是 0，但计算图会挂上这个专家的参数
+                y[0, 0] += 0 * sum(p.sum() for p in expert.parameters())
+        
+        # 计算MoE 路由负载均衡辅助损失 aux_loss → 防止专家闲置、部分专家过载
+            # 只训练阶段 + 配置里开启了均衡损失权重才计算
+        if self.training and self.config.router_aux_loss_coef > 0:
+            # 获取每个专家被选中的平均频次（负载）：
+                # one_hot：     把每个 token 选中的专家 id，转独热编码形状：
+                                            # [batch_size * seq_len, num_experts_per_tok, num_experts]
+                # .mean(0)：    按全体 token 维度求平均
+                # load 形状：   [num_experts] →  含义：每个专家被选中的平均频次（负载）
+            load = F.one_hot(topk_idx, self.config.num_experts).float().mean(0)
+            # 计算均衡辅助损失：
+                # scores.mean(0)：所有 token 对每个专家的平均路由打分
+                # load * scores.mean(0)：负载分布 × 路由分数分布
+                # .sum()：求和
+                # 乘专家数、平衡系数：
+                    # 约束：专家被选中频率 + 路由打分尽量均匀
+                    # 避免：少数专家累死、大部分专家摸鱼
+            self.aux_loss = (load * scores.mean(0)).sum()   \
+                            * self.config.num_experts   \
+                            * self.config.router_aux_loss_coef
+        else:
+            self.aux_loss = scores.new_zeros(1).squeeze()
+
+        return y.view(batch_size, seq_len, hidden_dim)
 
 # Transformer Block
 class MiniMindBlock(nn.Module):
