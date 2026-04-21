@@ -477,7 +477,7 @@ class FeedForward(nn.Module):
 
 
 # MOE FFN
-class MOEForward(nn.Module):
+class MoEFeedForward(nn.Module):
     def __init__(self, config: MiniMindConfig):
         super().__init__()
         self.config = config
