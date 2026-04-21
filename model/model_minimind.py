@@ -488,9 +488,12 @@ class MOEForward(nn.Module):
 
     def forward(self, x):
         batch_size, seq_len, hidden_dim = x.shape
-        # 将输入矩阵展平为 [batch_size * seq_len, hidden_dim]
+        # 将输入矩阵展平为 x_flat 形状： [batch_size * seq_len, hidden_dim]
         x_flat = x.view(-1, hidden_dim)
         # 1. 获取每个 token 所选专家的权重、索引
+            # scores 形状：[batch_size * seq_len, num_experts]
+            # topk_weight 形状：[batch_size * seq_len, num_experts_per_tok]
+            # topk_idx 形状：[batch_size * seq_len, num_experts_per_tok]
         scores = F.softmax(self.gate(x_flat), dim = -1)
         topk_weight, topk_idx = torch.topk(scores, k = self.config.num_experts_per_tok, dim = -1, sorted = False)
         # 2. 对选出的 Top-K 专家的权重之和归一化
@@ -500,11 +503,12 @@ class MOEForward(nn.Module):
         y = torch.zeros_like(x_flat)
         for i, expert in enumerate(self.experts):
             # mask 根据 topk_idx 中是否记录当前专家的索引，若有当前专家的索引，则记录当前专家需处理的 token 对应的下标
+                # mask 形状：[batch_size * seq_len, num_experts_per_tok]
             mask = (topk_idx == i)
             if mask.any():
-                # token_idx：取出当前专家处理的 token 对应的下标
+                # token_idx：取出当前专家处理的全部 token 对应的下标
                 token_idx = mask.any(dim = -1).nonzero().flatten()
-                # weight：取出当前专家处理的 token 对应的权重
+                # weight：取出当前专家处理的全部 token 对应的权重
                 weight = topk_weight[mask].view(-1, 1)
                 # 4. 对专家网络输出进行加权求和
                     # 专家计算 + 加权累加：
