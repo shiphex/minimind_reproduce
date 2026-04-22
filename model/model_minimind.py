@@ -82,6 +82,17 @@ class MiniMindConfig(PretrainedConfig):
         self.moe_intermediate_size  = kwargs.get("moe_intermediate_size", self.intermediate_size)
         self.norm_topk_prob         = kwargs.get("norm_topk_prob", True)
         self.router_aux_loss_coef   = kwargs.get("router_aux_loss_coef", 5e-4)
+        # MoE for shared experts 配置参数：
+            # num_routed_experts        路由选择的专家数量
+            # num_shared_experts        共享专家的数量
+            # scoring_func              评分函数，默认为'softmax'
+            # aux_loss_alpha            辅助损失 alpha 权重，默认为0.1
+            # seq_aux                   是否在序列级别上计算辅助损失
+        self.num_routed_experts = kwargs.get("num_routed_experts", self.num_experts)
+        self.num_shared_experts = kwargs.get("num_shared_experts", bool(True))
+        self.scoring_func = kwargs.get("scoring_func", "softmax")
+        self.aux_loss_alpha = kwargs.get("aux_loss_alpha", float(0.1))
+        self.seq_aux = kwargs.get("seq_aux", bool(True))
 
 # 废弃的config
 '''
@@ -110,8 +121,8 @@ class MiniMindConfig(PretrainedConfig):
 #         ############ MoE ############
 #         use_moe: bool = False,                      # 是否使用专家混合(Mixture of Experts)架构
 #         num_experts_per_tok: int = 2,               # 每个token使用的专家数量
-#         n_routed_experts: int = 4,                  # 路由选择的专家数量
-#         n_shared_experts: int = 1,                  # 共享专家的数量
+#         num_routed_experts: int = 4,                  # 路由选择的专家数量
+#         num_shared_experts: int = 1,                  # 共享专家的数量
 #         scoring_func: str = "softmax",              # 专家评分函数
 #         aux_loss_alpha: float = 0.01,               # 辅助损失的权重
 #         seq_aux: bool = True,                       # 是否使用序列辅助损失
@@ -142,8 +153,8 @@ class MiniMindConfig(PretrainedConfig):
 #         # 设置MoE参数
 #         self.use_moe = use_moe
 #         self.num_experts_per_tok = num_experts_per_tok
-#         self.n_routed_experts = n_routed_experts
-#         self.n_shared_experts = n_shared_experts
+#         self.num_routed_experts = num_routed_experts
+#         self.num_shared_experts = num_shared_experts
 #         self.seq_aux = seq_aux
 #         self.norm_topk_prob = norm_topk_prob
 #         self.aux_loss_alpha = aux_loss_alpha
@@ -546,6 +557,91 @@ class MoEFeedForward(nn.Module):
             self.aux_loss = scores.new_zeros(1).squeeze()
 
         return y.view(batch_size, seq_len, hidden_dim)
+
+
+# MoE Gate
+# 只在使用共享专家网络时使用该模块
+class MoEGate(nn.Module):
+    def __init__(self, config: MiniMindConfig):
+        super().__init__()
+        self.config
+        self.top_k = config.num_experts_per_tok
+        self.num_routed_experts = config.num_routed_experts
+
+        self.scoring_func = config.scoring_func
+        self.alpha = config.aux_loss_alpha
+        self.seq_aux = config.seq_aux
+
+        self.norm_topk_prob = config.norm_topk_prob
+        self.gating_dim = config.hidden_size
+        # 初始化专家权重
+            # 等价于一个 nn.Linear(hidden_size, num_routed_experts, bias=False)
+            # 即每个专家对应一行权重向量，拿 token 的隐藏向量去和每个专家权重做点积，得到“这个 token 该不该去这个专家”的打分。
+        self.weight = nn.Parameter(torch.empty(self.num_routed_experts, self.gating_dim))
+        self.reset_parameters()
+
+    # 初始化权重，Kaiming 初始化能让一开始的打分分布不要太离谱
+    def reset_parameters(self) -> None:
+        nn.init.kaiming_uniform_(self.weight, a = math.sqrt(5))
+
+    # 前向计算
+    def forward(self, hidden_states):
+        batch_size, seq_len, hidden_dim = hidden_states.shape
+        hidden_states = hidden_states.view(-1, hidden_dim)
+
+        # 1. 获取每个 token 所选专家的权重、索引
+            # logits、scores 形状： [batch_size * seq_len, num_routed_experts]
+        logits = F.linear(hidden_states, self.weight, None)
+        if self.scoring_func == "softmax":
+            scores = logits.softmax(dim = -1)
+        else:
+            raise NotImplementedError(f"insupportable scoring function for MoE gating: {self.scoring_func}")
+        # topk_weight 形状：[batch_size * seq_len, num_experts_per_tok]
+        # topk_idx 形状：[batch_size * seq_len, num_experts_per_tok]
+        topk_weight, topk_idx = torch.topk(scores, k = self.top_k, dim = -1, sorted = False)
+
+        # 2. 对选出的 Top-K 专家的权重之和归一化
+        if self.top_k > 1 and self.norm_topk_prob:
+            scores_for_aux = scores
+            aux_topk = self.top_k
+            # 负载均衡辅助损失，形状：[batch_size, seq_len * num_experts_per_tok]
+            topk_idx_for_aux_loss = topk_idx.view(batch_size, -1)
+            # (1) 按样本计算负载均衡辅助损失，每个 batch_size 是一个样本
+            if self.seq_aux:
+                # scores_for_seq_aux 形状：[batch_size, seq_len, num_routed_experts]
+                scores_for_seq_aux = scores_for_aux.view(batch_size, seq_len, -1)
+                # ce：记录这个样本里，这个专家实际上被选中了多少次，相对“均匀分配”偏了多少。
+                    # ce 形状：[batch_size, num_routed_experts]
+                ce = torch.zeros(batch_size, self.num_routed_experts, device = hidden_states.device)
+                ce.scatter_add_(1, 
+                                topk_idx_for_aux_loss, 
+                                torch.ones(batch_size, seq_len * aux_topk, device = hidden_states.device), 
+                                ).div_(seq_len * aux_topk / self.num_routed_experts)
+                aux_loss = (ce * scores_for_seq_aux.mean(dim = -1)).sum(dim = 1).mean() * self.alpha
+            # (2) 按整个 batch 全局计算负载均衡辅助损失
+            else:
+                # mask_ce 形状：[batch_size * seq_len * num_experts_per_tok, num_routed_experts]
+                # ce 各专家被选择的(次数/总选择次数)，形状：[num_routed_experts]
+                # Pi 各专家的路由打分，形状：[num_routed_experts]
+                mask_ce = F.one_hot(topk_idx_for_aux_loss.view(-1), num_classes = self.num_routed_experts)
+                ce = mask_ce.float().mean(0)
+                Pi = scores_for_aux.mean(0)
+                fi = ce * self.num_routed_experts
+                aux_loss = (Pi * fi).sum() * self.alpha
+
+        else:
+            aux_loss = scores.new_zeros(1).squeeze() # 0
+
+        return topk_idx, topk_weight, aux_loss
+
+        
+        
+
+# MoE FeedForward with shared experts
+# 只在使用共享专家网络时使用该模块
+class MoEFeedForward_shared_experts(nn.Module):
+    pass
+
 
 # Transformer Block
 class MiniMindBlock(nn.Module):
