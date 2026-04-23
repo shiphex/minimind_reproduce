@@ -699,11 +699,19 @@ class MoEFeedForward_shared_experts(nn.Module):
     @torch.no_grad()
     def moe_infer(self, x, flat_expert_indices, flat_expert_weights):
         expert_cache = torch.zeros_like(x)
-        # 按专家顺序对 token 分拣
+        # 按专家顺序对 token 分拣，得到的 idx 为按专家排序的展开的 token 索引
         idxs = flat_expert_indices.argsort()
-        # 按专家打包
+        # 算出每个专家负责的数据段在排序后数组里的起止下标，用来切片批量推理
+            # 按专家打包，统计每个专家分到多少 token，划分批次，算出每个专家负责的 token 区间：[0~a), [a~b), [b~c)...]
+            # flat_expert_indices.bincount()：  统计每个专家被分配到多少条路由记录，得到一个数组：[专家0条数, 专家1条数, 专家2条数, ...]
+            # .cpu().numpy()：                  转到 CPU 并转成 numpy 数组，方便做累加
+            # .cumsum(0)                        沿第 0 维前缀和累加，得到每段结束的索引位置，比如 [2,2,1] → 累加后 [2,4,5]，表示：
+                # 专家 0：0~2
+                # 专家 1：2~4
+                # 专家 2：4~5
         tokens_per_expert = flat_expert_indices.bincount().cpu().numpy().cumsum()
-        # 计算每个 token 对应的专家
+        # 记录计算排序后的每一条路由，到底属于原始哪个 token 索引
+            # 因为每个 token 分配到 num_experts_per_tok 个专家，idx 为展开后的索引，需要除以 num_experts_per_tok 得到原始 token 索引
         token_idxs = idxs // self.config.num_experts_per_tok
 
         for i, end_idx in enumerate(tokens_per_expert):
