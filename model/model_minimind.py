@@ -89,7 +89,7 @@ class MiniMindConfig(PretrainedConfig):
             # aux_loss_alpha            辅助损失 alpha 权重，默认为0.1
             # seq_aux                   是否在序列级别上计算辅助损失
         self.num_routed_experts = kwargs.get("num_routed_experts", self.num_experts)
-        self.num_shared_experts = kwargs.get("num_shared_experts", bool(True))
+        self.num_shared_experts = kwargs.get("num_shared_experts", int(1))
         self.scoring_func = kwargs.get("scoring_func", "softmax")
         self.aux_loss_alpha = kwargs.get("aux_loss_alpha", float(0.1))
         self.seq_aux = kwargs.get("seq_aux", bool(True))
@@ -640,7 +640,95 @@ class MoEGate(nn.Module):
 # MoE FeedForward with shared experts
 # 只在使用共享专家网络时使用该模块
 class MoEFeedForward_shared_experts(nn.Module):
-    pass
+    def __init__(self, config: MiniMindConfig):
+        super().__init__()
+        self.config = config
+        # 专家层
+        # (1)路由专家
+        self.experts = nn.ModuleList([FeedForward(config) for _ in range(config.num_routed_experts)])
+        # (2)共享专家
+        if config.num_shared_experts > 0:
+            self.shared_experts = nn.ModuleList([FeedForward(config) for _ in range(config.num_shared_experts)])
+
+        # 门控层
+        self.gate = MoEGate(config)
+
+    def forward(self, x):
+        identity = x
+        orig_shape = x.shape
+        batch_size, seq_len, hidden_dim = orig_shape
+
+        # 使用门控网络选择路由专家
+        topk_idx, topk_weight, aux_loss = self.gate(x)
+        # 将 x 形状转换为 [batch_size * seq_len, hidden_dim] 
+        # flat_topk_idx 形状：[batch_size * seq_len * num_experts_per_tok]
+        x = x.view(-1, x.shape[-1])
+        flat_topk_idx = topk_idx.view(-1)
+
+        # 训练阶段：
+        if self.training:
+            # 把每个 token 复制 num_experts_per_tok 份
+                # x 形状：[batch_size * seq_len * num_experts_per_tok, hidden_dim]
+            x = x.repeat_interleave(self.config.num_experts_per_tok, dim = 0)
+            y = torch.empty_like(x, dtype = x.dtype)
+
+            for i, expert in enumerate(self.experts):
+                expert_out = expert(x[flat_topk_idx == i])
+                if expert_out.shape[0] > 0:
+                    y[flat_topk_idx == i] = expert_out.to(y.dtype)
+                else:
+                    y[flat_topk_idx == i] = expert_out.to(y.dtype)  \
+                                            + 0 * sum(p.sum() for p in expert.parameters())
+            # 加权求和
+            y = (y.view(*topk_weight.shape, -1) * topk_weight.unsqueeze(-1)).sum(dim = 1)
+            y = y.view(*orig_shape)
+
+        # 推理阶段：
+        else:
+            y = self.moe_infer(x, flat_topk_idx, topk_weight.view(-1, 1)).view(*orig_shape)
+        
+        # 共享专家输出
+        if self.config.num_shared_experts > 0:
+            for expert in self.shared_experts:
+                y = y + expert(identity)
+
+        self.aux_loss = aux_loss
+
+
+    # MoE 推理方法：
+    @torch.no_grad()
+    def moe_infer(self, x, flat_expert_indices, flat_expert_weights):
+        expert_cache = torch.zeros_like(x)
+        # 按专家顺序对 token 分拣
+        idxs = flat_expert_indices.argsort()
+        # 按专家打包
+        tokens_per_expert = flat_expert_indices.bincount().cpu().numpy().cumsum()
+        # 计算每个 token 对应的专家
+        token_idxs = idxs // self.config.num_experts_per_tok
+
+        for i, end_idx in enumerate(tokens_per_expert):
+            # 计算当前包的起始位置
+            start_idx = 0 if i == 0 else tokens_per_expert[i - 1]
+            if start_idx == end_idx:
+                continue
+
+            # 取当前包对应专家
+            expert = self.experts[i]
+            # 取出 token 对应的原始索引
+            epx_token_idx = token_idxs[start_idx: end_idx]
+            # 取出对应 token 原始数据
+            expert_tokens = x[epx_token_idx]
+            # 专家一次性处理所有对应 token
+            expert_out = expert(expert_tokens).to(expert_cache.dtype)
+            # 加权求和
+            expert_out.mul_(flat_expert_weights[idxs[start_idx: end_idx]])
+
+            # 将该专家输出写入缓存
+            expert_cache.scatter_add_(0, 
+                                      epx_token_idx.view(-1, 1).repeat(1, x.shape[-1]), 
+                                      expert_out)
+            
+        return expert_cache
 
 
 # Transformer Block
