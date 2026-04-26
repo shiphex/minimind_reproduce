@@ -1,4 +1,4 @@
-# 相对负载
+# 序列级辅助损失计算（seq_aux = True）
 
 
 ## 1 先把除法式子拆开
@@ -207,3 +207,102 @@ $$L\cdot K = 4,\quad \dfrac{E}{L\cdot K} = \dfrac{4}{4}=1$$
 
 
 
+# 批级辅助损失计算（seq_aux = False）
+
+对照公式和之前的代码，把每一步一一对应起来，就能看明白这段代码是怎么实现批级辅助损失的。
+
+---
+
+## 一、先把公式和代码变量对应上
+先把所有符号翻译成代码里的变量，这样对照起来会非常清晰：
+
+| 公式符号 | 含义 | 代码中的对应变量 |
+| :--- | :--- | :--- |
+| $E$ | 专家总数 | `self.n_routed_experts` |
+| $N$ | 批次样本数 | 隐含在 `topk_idx_for_aux_loss` 中 |
+| $k$ | 每个样本选的专家数（top-k） | 隐含在 `topk_idx_for_aux_loss` 中 |
+| $m_{i,e}$ | 第$i$个样本是否选了专家$e$（one-hot） | `mask_ce`（one-hot 结果） |
+| $f_e$ | 专家$e$的全局平均选择率 | `ce`（`mask_ce.float().mean(0)`） |
+| $\hat{f}_e$ | 标准化后的相对负载因子 | `fi`（`ce * self.n_routed_experts`） |
+| $s_{i,e}$ | 第$i$个样本对专家$e$的路由分数 | `scores_for_aux` |
+| $p_e$ | 专家$e$的全局平均分数 | `Pi`（`scores_for_aux.mean(0)`） |
+| $\alpha$ | 辅助损失权重系数 | `self.alpha` |
+| $\mathcal{L}_{\text{aux}}^{\text{batch}}$ | 最终批级辅助损失 | `aux_loss` |
+
+---
+
+## 二、逐步骤对照公式与代码实现
+
+### 步骤 1：计算专家 $e$ 的全局平均选择率 $f_e$
+公式：
+$$f_e = \frac{1}{N \cdot k} \sum_{i=1}^{N \cdot k} m_{i,e}$$
+代码实现：
+```python
+mask_ce = F.one_hot(
+    topk_idx_for_aux_loss.view(-1), num_classes=self.n_routed_experts
+)
+ce = mask_ce.float().mean(0)
+```
+- `topk_idx_for_aux_loss.view(-1)`：把 `(N, k)` 的 top-k 索引展平成 `(N·k,)`，对应公式里的 $N \cdot k$ 个样本-专家选择。
+- `F.one_hot(...)`：生成 one-hot 编码，就是公式里的 $m_{i,e}$，表示第 $i$ 个选择里，是否选了专家 $e$。
+- `.float().mean(0)`：在 `N·k` 维度上求均值，就是公式里的 $\frac{1}{N \cdot k} \sum$，直接得到 $f_e$。
+
+---
+
+### 步骤 2：标准化为“相对负载因子” $\hat{f}_e$
+公式：
+$$\hat{f}_e = f_e \cdot E$$
+代码实现：
+```python
+fi = ce * self.n_routed_experts
+```
+- 这里 `ce` 就是上一步的 $f_e$，`self.n_routed_experts` 就是 $E$，直接完成标准化。
+- 当专家负载均衡时，$f_e = 1/E$，此时 $\hat{f}_e = 1$，和公式说明完全一致。
+
+---
+
+### 步骤 3：计算专家 $e$ 的全局平均分数 $p_e$
+公式：
+$$p_e = \frac{1}{N} \sum_{i=1}^{N} s_{i,e}$$
+代码实现：
+```python
+Pi = scores_for_aux.mean(0)
+```
+- `scores_for_aux` 就是每个样本对所有专家的路由分数 $s_{i,e}$，形状是 `(N, E)`。
+- `.mean(0)`：在 `N` 个样本维度上求均值，就是公式里的 $\frac{1}{N} \sum$，直接得到 $p_e$。
+
+---
+
+### 步骤 4：计算批级辅助损失 $\mathcal{L}_{\text{aux}}^{\text{batch}}$
+公式：
+$$\mathcal{L}_{\text{aux}}^{\text{batch}} = \alpha \cdot \sum_{e=1}^{E} \hat{f}_e \cdot p_e$$
+代码实现：
+```python
+aux_loss = (Pi * fi).sum() * self.alpha
+```
+- `Pi * fi`：对应公式里的 $\hat{f}_e \cdot p_e$，逐元素相乘。
+- `.sum()`：对所有专家 $e$ 求和，即 $\sum_{e=1}^{E}$。
+- `* self.alpha`：乘以权重系数 $\alpha$，完成最终损失计算。
+
+---
+
+## 三、直观解释：代码里的损失是怎么让专家均衡的？
+图片里的直观解释，完全对应这段代码的逻辑：
+1.  **损失项 $\hat{f}_e \cdot p_e$ 的作用**：
+    - 如果专家 $e$ 负载很高（$\hat{f}_e > 1$，说明被选得太多），损失会鼓励模型降低对它的路由分数 $p_e$。
+    - 如果专家 $e$ 负载很低（$\hat{f}_e < 1$，说明被选得太少），损失会鼓励模型提高对它的路由分数 $p_e$。
+2.  **梯度反传的效果**：
+    门控网络（gating network）会根据这个损失调整每个专家的路由分数，让所有专家的 $\hat{f}_e$ 都趋近于 1，最终实现负载均衡。
+3.  **计算高效**：
+    整个过程都是在批次维度上做均值和矩阵运算，没有复杂的序列级操作，适合大规模训练，这也是 Switch Transformer 采用这种方式的原因。
+
+---
+
+## 四、总结：这段代码就是公式的直接实现
+
+- 用 one-hot + 均值 计算 $f_e$（实际选择率）
+- 乘以专家数 $E$ 得到 $\hat{f}_e$（相对负载因子）
+- 用路由分数的均值计算 $p_e$（模型分配的平均分数）
+- 逐元素相乘、求和、乘以权重 $\alpha$ 得到最终损失。
+
+---
